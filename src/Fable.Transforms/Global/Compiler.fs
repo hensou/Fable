@@ -111,6 +111,13 @@ module CompilerExt =
         /// Use this only once at the start of the program
         static member SetLanguageUnsafe lang = _lang <- lang
 
+        member com.TryGetMember(memberRef: Fable.MemberRef option) =
+            memberRef
+            |> Option.bind (fun r ->
+                match com.TryGetEntity(r.EntityRef) with
+                | Some e -> Map.tryFind r.UniqueName e.MembersFunctionsAndValues
+                | None -> None)
+
         member com.GetEntity(entityRef: Fable.EntityRef) =
             match com.TryGetEntity(entityRef) with
             | Some e -> e
@@ -130,6 +137,7 @@ module CompilerExt =
                 member _.Options = com.Options
                 member _.GetRootModule(fileName) = com.GetRootModule(fileName)
                 member _.GetEntity(ref) = com.GetEntity(ref)
+                member _.TryGetMember(ref) = com.TryGetMember(ref)
                 member _.LogWarning(msg, r) = com.AddLog(msg, Severity.Warning, ?range=r, fileName=com.CurrentFile)
                 member _.LogError(msg, r) = com.AddLog(msg, Severity.Error, ?range=r, fileName=com.CurrentFile)
                 member _.GetOutputPath() =

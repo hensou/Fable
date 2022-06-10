@@ -622,13 +622,13 @@ module AST =
         ClassImport(path) |> makeInternalImport com Any selector path
 
     let makeCallInfo thisArg args sigArgTypes =
-        CallInfo.Make(?thisArg=thisArg, args=args, sigArgTypes=sigArgTypes)
+        CallInfo.Create(?thisArg=thisArg, args=args, sigArgTypes=sigArgTypes)
 
     let emit r t args isStatement macro =
         let emitInfo =
             { Macro = macro
               IsStatement = isStatement
-              CallInfo = CallInfo.Make(args=args) }
+              CallInfo = CallInfo.Create(args=args) }
         Emit(emitInfo, t, r)
 
     let emitExpr r t args macro =

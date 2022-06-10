@@ -483,12 +483,22 @@ module private Transforms =
                 Let(ident, value, curryIdentsInBody replacements body)
         | e -> e
 
+    let uncurryMemberKind kind body =
+        match kind with
+        | MemberFunction(argDecls, hasSpread) ->
+            let argIdents = argDecls |> List.map (fun a -> a.Ident)
+            let argIdents, body = curryArgIdentsAndReplaceInBody argIdents body
+            let argDecls = List.zip argDecls argIdents |> List.map (fun (d, i) -> { d with Ident = i })
+            MemberFunction(argDecls, hasSpread), body
+        | MemberSetter argDecl ->
+            let argIdents, body = curryArgIdentsAndReplaceInBody [argDecl.Ident] body
+            MemberSetter { argDecl with Ident = argIdents.Head }, body
+        | MemberGetter
+        | MemberValue _ as kind -> kind, body
+
     let uncurryMemberArgs (m: MemberDecl) =
-        if m.Info.IsValue then m
-        else
-            let args, body = curryArgIdentsAndReplaceInBody m.ArgIdents m.Body
-            let args = List.zip m.Args args |> List.map (fun (d, i) -> { d with Ident = i })
-            { m with Args = args; Body = body }
+        let kind, body = uncurryMemberKind m.Kind m.Body
+        { m with Kind = kind; Body = body }
 
     let (|GetField|_|) (com: Compiler) = function
         | Get(callee, kind, _, r) ->
@@ -521,7 +531,10 @@ module private Transforms =
             | (arity, _), _ when arity > 1 -> Extended(Curry(e, arity), r)
             | _ -> e
         | ObjectExpr(members, t, baseCall) ->
-            ObjectExpr(List.map uncurryMemberArgs members, t, baseCall)
+            let members = members |> List.map (fun m ->
+                let kind, body = uncurryMemberKind m.Kind m.Body
+                { m with Kind = kind; Body = body })
+            ObjectExpr(members, t, baseCall)
         | e -> e
 
     let uncurrySendingArgs (com: Compiler) e =
@@ -558,6 +571,7 @@ module private Transforms =
                 match t with
                 | DeclaredType(e, _genArgs) ->
                     com.GetEntity(e).MembersFunctionsAndValues
+                    |> Map.values
                     |> Seq.choose (fun m ->
                         if m.IsGetter || m.IsValue then
                             Some(m.CompiledName, m.ReturnParameter.Type)
@@ -566,8 +580,12 @@ module private Transforms =
                 | _ -> Map.empty
             let members =
                 members |> List.map (fun m ->
-                    let hasGenerics = m.Body.Type.Generics |> List.isEmpty |> not
-                    if m.Info.IsGetter || (m.Info.IsValue && not hasGenerics) then
+                    let isGetterOrValueWithoutGenerics =
+                        match m.Kind with
+                        | MemberGetter -> true
+                        | MemberValue _ -> List.isEmpty m.GenericParams
+                        | _ -> false
+                    if isGetterOrValueWithoutGenerics then
                         let membType =
                             Map.tryFind m.Name membersMap
                             |> Option.defaultValue m.Body.Type
@@ -659,7 +677,7 @@ let rec transformDeclaration transformations (com: Compiler) file decl =
         // (ent, ident, cons, baseCall, attachedMembers)
         let attachedMembers =
             decl.AttachedMembers
-            |> List.map (uncurryMemberArgs >> transformMemberBody com)
+            |> List.map (fun (m, r) -> uncurryMemberArgs m |> transformMemberBody com, r)
 
         let cons, baseCall =
             match decl.Constructor, decl.BaseCall with
@@ -667,16 +685,22 @@ let rec transformDeclaration transformations (com: Compiler) file decl =
             | Some cons, None ->
                 uncurryMemberArgs cons |> transformMemberBody com |> Some, None
             | Some cons, Some baseCall ->
+                let argDecls, hasSpread =
+                    match cons.Kind with
+                    | MemberFunction(args, hasSpread) -> args, hasSpread
+                    | _ -> [], false
+                let argIdents = argDecls |> List.map (fun a -> a.Ident)
                 // In order to uncurry correctly the baseCall arguments,
                 // we need to include it in the constructor body
                 let args, body =
                     Sequential [baseCall; cons.Body]
-                    |> curryArgIdentsAndReplaceInBody cons.ArgIdents
-                let args = List.zip cons.Args args |> List.map (fun (d, i) -> { d with Ident = i })
+                    |> curryArgIdentsAndReplaceInBody argIdents
+                let argDecls = List.zip argDecls args |> List.map (fun (d, i) -> { d with Ident = i })
+                let kind = MemberFunction(argDecls, hasSpread)
                 transformExpr com body
                 |> function
-                    | Sequential [baseCall; body] -> Some { cons with Args = args; Body = body }, Some baseCall
-                    | body -> Some { cons with Args = args; Body = body }, None // Unexpected, raise error?
+                    | Sequential [baseCall; body] -> Some { cons with Kind = kind; Body = body }, Some baseCall
+                    | body -> Some { cons with Kind = kind; Body = body }, None // Unexpected, raise error?
 
         { decl with Constructor = cons
                     BaseCall = baseCall

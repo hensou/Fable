@@ -549,67 +549,6 @@ let makeGenericAverager (com: ICompiler) ctx t =
         divideFn
     ])
 
-let makePojoFromLambda com arg =
-    let rec flattenSequential = function
-        | Sequential statements ->
-            List.collect flattenSequential statements
-        | e -> [e]
-    match arg with
-    | Lambda(_, lambdaBody, _) ->
-        (flattenSequential lambdaBody, Some []) ||> List.foldBack (fun statement acc ->
-            match acc, statement with
-            | Some acc, Set(_, FieldSet(fieldName), _, value, _) ->
-                objValue (fieldName, value)::acc |> Some
-            | _ -> None)
-    | _ -> None
-    |> Option.map (fun members -> ObjectExpr(members, Any, None))
-    |> Option.defaultWith (fun () -> Helper.LibCall(com, "Util", "jsOptions", Any, [arg]))
-
-let makePojo (com: Compiler) caseRule keyValueList =
-    let makeObjMember caseRule name values =
-        let value =
-            match values with
-            | [] -> makeBoolConst true
-            | [value] -> value
-            | values -> Value(NewArray(ArrayValues values, Any, MutableArray), None)
-        objValue(Naming.applyCaseRule caseRule name, value)
-
-    // let rec findKeyValueList scope identName =
-    //     match scope with
-    //     | [] -> None
-    //     | (_,ident2,expr)::prevScope ->
-    //         if identName = ident2.Name then
-    //             match expr with
-    //             | Some(ArrayOrListLiteral(kvs,_)) -> Some kvs
-    //             | Some(MaybeCasted(IdentExpr ident)) -> findKeyValueList prevScope ident.Name
-    //             | _ -> None
-    //         else findKeyValueList prevScope identName
-
-    let caseRule =
-        match caseRule with
-        | Some(NumberConst(:? int as rule,_)) -> Some rule
-        | _ -> None
-        |> Option.map enum
-        |> Option.defaultValue Fable.Core.CaseRules.None
-
-    match keyValueList with
-    | ArrayOrListLiteral(kvs,_) -> Some kvs
-    // | MaybeCasted(IdentExpr ident) -> findKeyValueList ctx.Scope ident.Name
-    | _ -> None
-    |> Option.bind (fun kvs ->
-        (kvs, Some []) ||> List.foldBack (fun m acc ->
-            match acc, m with
-            // Try to get the member key and value at compile time for unions and tuples
-            | Some acc, MaybeCasted(Value(NewUnion(values, uci, ent, _),_)) ->
-                let uci = com.GetEntity(ent).UnionCases |> List.item uci
-                let name = defaultArg uci.CompiledName uci.Name
-                makeObjMember caseRule name values::acc |> Some
-            | Some acc, MaybeCasted(Value(NewTuple((StringConst name)::values,_),_)) ->
-                // Don't change the case for tuples in disguise
-                makeObjMember Core.CaseRules.None name values::acc |> Some
-            | _ -> None))
-    |> Option.map (fun members -> ObjectExpr(members, Any, None))
-
 let injectArg (com: ICompiler) (ctx: Context) r moduleName methName (genArgs: Type list) args =
     let injectArgInner args (injectType, injectGenArgIndex) =
         List.tryItem injectGenArgIndex genArgs

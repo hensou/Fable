@@ -101,7 +101,7 @@ let private combineHashCodes (hashes: int seq) =
 let private stringHash (s: string) =
     let mutable h = 5381
     for i = 0 to s.Length - 1 do
-        h <- (h * 33) ^^^ (int s.[i])
+        h <- (h * 33) ^^^ (int s[i])
     h
 
 let private getHashPrivate (entAtts: Fable.Attribute seq) (paramTypes: ParamTypes) genParams =

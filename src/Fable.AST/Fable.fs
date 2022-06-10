@@ -21,6 +21,13 @@ type EntityRef =
         | PrecompiledLib(p,_) -> Some p
         | AssemblyPath _ | CoreAssemblyName _ -> None
 
+type MemberRef =
+    { EntityRef: EntityRef
+      UniqueName: string }
+    static member Create(entRef, uniqueName) =
+        { EntityRef = entRef
+          UniqueName = uniqueName }
+
 type DeclaredType =
     abstract Entity: EntityRef
     abstract GenericArgs: Type list
@@ -58,19 +65,23 @@ type Constraint =
     | IsEnum
 
 type GenericParam =
-    { Name: string
-      IsMeasure: bool
-      Constraints: Constraint list }
+    abstract Name: string
+    abstract IsMeasure: bool
+    abstract Constraints: Constraint list
 
 type Parameter =
-    { Name: string option
-      Type: Type }
+    abstract Attributes: Attribute seq
+    abstract Name: string option
+    abstract Type: Type
+    abstract IsNamed: bool
+    abstract IsOptional: bool
 
-// TODO: In Fable 4 this should be a record for consistency with other serializable types
-type MemberInfo =
+type MemberFunctionOrValue =
+    abstract DisplayName: string
+    abstract CompiledName: string
+    abstract FullName: string
     abstract Attributes: Attribute seq
     abstract HasSpread: bool
-    abstract IsMangled: bool
     abstract IsInline: bool
     abstract IsPublic: bool
     abstract IsInstance: bool
@@ -79,17 +90,11 @@ type MemberInfo =
     abstract IsGetter: bool
     abstract IsSetter: bool
     abstract IsProperty: bool
-    abstract IsEnumerator: bool
     abstract IsOverrideOrExplicitInterfaceImplementation: bool
-
-type MemberFunctionOrValue =
-    inherit MemberInfo
-    abstract DisplayName: string
-    abstract CompiledName: string
-    abstract FullName: string
     abstract GenericParameters: GenericParam list
     abstract CurriedParameterGroups: Parameter list list
     abstract ReturnParameter: Parameter
+    abstract DeclaringEntity: EntityRef option
     abstract ApparentEnclosingEntity: EntityRef
     abstract IsDispatchSlot: bool
 
@@ -102,7 +107,7 @@ type Entity =
     abstract AllInterfaces: DeclaredType seq
     abstract DeclaredInterfaces: DeclaredType seq
     abstract GenericParameters: GenericParam list
-    abstract MembersFunctionsAndValues: MemberFunctionOrValue seq
+    abstract MembersFunctionsAndValues: Map<string, MemberFunctionOrValue>
     abstract FSharpFields: Field list
     abstract UnionCases: UnionCase list
     abstract IsAbstractClass: bool
@@ -186,20 +191,37 @@ type ArgDecl = {
           IsNamed = defaultArg isNamed false
           DefaultValue = defaultValue }
 
+type MemberKind =
+    | MemberFunction of ArgDecl list * hasSpread: bool
+    | MemberValue of isMutable: bool
+    | MemberGetter
+    | MemberSetter of ArgDecl
+
+type ObjectExprMember = {
+    Name: string
+    Kind: MemberKind
+    Body: Expr
+    GenericParams: GenericParam list
+    MemberRef: MemberRef option
+}
+
 type MemberDecl = {
     Name: string
-    FullDisplayName: string
-    Args: ArgDecl list
+    IsPublic: bool
+    Kind: MemberKind
     Body: Expr
-    Info: MemberInfo
+    MemberRef: MemberRef option
     GenericParams: GenericParam list
     UsedNames: Set<string>
-    /// This can only be set once per file
-    /// for a declaration in the root scope
-    ExportDefault: bool
-    DeclaringEntity: EntityRef option
     XmlDoc: string option
+    Tags: string list
 } with
+    member private this.Args =
+        match this.Kind with
+        | MemberFunction(args,_) -> args
+        | MemberSetter arg -> [arg]
+        | MemberValue _
+        | MemberGetter _ -> []
     member this.ArgIdents = this.Args |> List.map (fun a -> a.Ident)
     member this.ArgTypes = this.Args |> List.map (fun a -> a.Ident.Type)
 
@@ -208,8 +230,9 @@ type ClassDecl = {
     Entity: EntityRef
     Constructor: MemberDecl option
     BaseCall: Expr option
-    AttachedMembers: MemberDecl list
+    AttachedMembers: (MemberDecl * MemberRef option) list
     XmlDoc: string option
+    Tags: string list
 }
 
 type ModuleDecl = {
@@ -323,21 +346,6 @@ type ValueKind =
         | NewAnonymousRecord (_, fieldNames, genArgs) -> AnonymousRecordType(fieldNames, genArgs)
         | NewUnion (_, _, ent, genArgs) -> DeclaredType(ent, genArgs)
 
-type ParamInfo =
-    { Name: string option
-      Type: Type
-      IsNamed: bool
-      IsOptional: bool }
-
-type CallMemberInfo =
-    { CurriedParameterGroups: ParamInfo list list
-      Attributes: Attribute list
-      IsInstance: bool
-      IsGetter: bool
-      FullName: string
-      CompiledName: string
-      DeclaringEntity: EntityRef option }
-
 type CallInfo =
     { ThisArg: Expr option
       Args: Expr list
@@ -346,24 +354,25 @@ type CallInfo =
       /// This is used for the uncurrying mechanism
       SignatureArgTypes: Type list
       GenericArgs: Type list
-      CallMemberInfo: CallMemberInfo option
+      MemberRef: MemberRef option
       HasSpread: bool
       IsConstructor: bool
       /// Tag used to apply further transformations to the call at the end of the AST transformation chain
       Tag: string option }
-    static member Make(?thisArg: Expr,
-                       ?args: Expr list,
-                       ?genArgs: Type list,
-                       ?sigArgTypes: Type list,
-                       ?memberInfo: CallMemberInfo,
-                       ?hasSpread: bool,
-                       ?isCons: bool,
-                       ?tag: string) =
+    static member Create(
+            ?thisArg: Expr,
+            ?args: Expr list,
+            ?genArgs: Type list,
+            ?sigArgTypes: Type list,
+            ?memberRef: MemberRef,
+            ?hasSpread: bool,
+            ?isCons: bool,
+            ?tag: string) =
         { ThisArg = thisArg
           Args = defaultArg args []
           GenericArgs = defaultArg genArgs []
           SignatureArgTypes = defaultArg sigArgTypes []
-          CallMemberInfo = memberInfo
+          MemberRef = memberRef
           HasSpread = defaultArg hasSpread false
           IsConstructor = defaultArg isCons false
           Tag = tag }
@@ -504,7 +513,7 @@ type Expr =
     | Lambda of arg: Ident * body: Expr * info: FuncInfo
     /// Delegates are uncurried functions, can have none or multiple arguments
     | Delegate of args: Ident list * body: Expr * info: FuncInfo
-    | ObjectExpr of members: MemberDecl list * typ: Type * baseCall: Expr option
+    | ObjectExpr of members: ObjectExprMember list * typ: Type * baseCall: Expr option
 
     // Type cast and tests
     | TypeCast of expr: Expr * Type
